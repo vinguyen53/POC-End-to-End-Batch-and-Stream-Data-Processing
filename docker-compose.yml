@@ -1,0 +1,252 @@
+#build airflow image and common config
+x-airflow-common: &airflow-common
+  build:
+    context: .
+    dockerfile: ./airflow/Dockerfile
+  image: airflow
+  environment:
+    AIRFLOW__CORE__LOAD_EXAMPLES: False
+    AIRFLOW__CORE__EXECUTOR: LocalExecutor
+    AIRFLOW__DATABASE__SQL_ALCHEMY_CONN: postgresql+psycopg2://admin:12345678@postgres:5432/airflow
+    AIRFLOW__WEBSERVER_BASE_URL: http://localhost:8080
+    AIRFLOW__WEBSERVER__SECRET_KEY: 46BKJoQYlPPOexq0OhDZnIlNepKFf87WFwLbfzqDDho=
+  volumes:
+    - ./airflow/jobs:/opt/airflow/jobs
+    - ./airflow/dags:/opt/airflow/dags
+    - ./airflow/logs:/opt/airflow/logs
+
+services:
+  #MYSQL database
+  mysql:
+    image: mysql:8.0
+    restart: on-failure
+    environment:
+      MYSQL_DATABASE: 'de_db'
+      MYSQL_USER: 'admin'
+      MYSQL_PASSWORD: '12345678'
+      MYSQL_ROOT_PASSWORD: '12345678'
+    ports:
+      - '3306:3306'
+    expose:
+      - '3306'
+    volumes:
+      - mysql-db:/var/lib/mysql
+  #MinIO object storage
+  minio:
+    image: minio/minio
+    ports:
+      - '9000:9000'
+      - '9001:9001'
+    environment:
+      MINIO_ROOT_USER: 'admin'
+      MINIO_ROOT_PASSWORD: '12345678'
+      MINIO_REGION_NAME: us-east-1
+    volumes:
+      - minio-db:/data
+    command: server --console-address ":9001" /data
+  #Spark cluster
+  spark-master:
+    image: bitnami/spark:latest
+    command: bin/spark-class org.apache.spark.deploy.master.Master
+    ports:
+      - '9090:8080'
+      - '7077:7077'
+    environment:
+      AWS_REGION: 'us-east-1'
+      AWS_ACCESS_KEY_ID: 'admin'
+      AWS_SECRET_ACCESS_KEY: '12345678'
+    volumes:
+      - ./mysql-connector-j-8.3.0.jar:/opt/bitnami/spark/jars/mysql-connector-j-8.3.0.jar
+      - ./iceberg-spark-runtime-3.5_2.12-1.4.3.jar:/opt/bitnami/spark/jars/iceberg-spark-runtime-3.5_2.12-1.4.3.jar
+      - ./nessie-spark-extensions-3.5_2.12-0.76.3.jar:/opt/bitnami/spark/jars/nessie-spark-extensions-3.5_2.12-0.76.3.jar
+      - ./kafka-clients-3.6.1.jar:/opt/bitnami/spark/jars/kafka-clients-3.6.1.jar
+      - ./spark-sql-kafka-0-10_2.12-3.5.0.jar:/opt/bitnami/spark/jars/spark-sql-kafka-0-10_2.12-3.5.0.jar
+      - ./spark-streaming-kafka-0-10-assembly_2.12-3.5.0.jar:/opt/bitnami/spark/jars/spark-streaming-kafka-0-10-assembly_2.12-3.5.0.jar
+      - ./commons-pool2-2.12.0.jar:/opt/bitnami/spark/jars/commons-pool2-2.12.0.jar
+      - ./spark-test.py:/opt/bitnami/spark/spark-test.py
+      - ./spark-streaming-test.py:/opt/bitnami/spark/spark-streaming-test.py
+  spark-worker:
+    image: bitnami/spark:latest
+    command: bin/spark-class org.apache.spark.deploy.worker.Worker spark://spark-master:7077
+    depends_on:
+      - spark-master
+    environment:
+      SPARK_MODE: worker
+      SPARK_WORKER_CORES: 1
+      SPARK_WORKER_MEMORY: 1g
+      SPARK_MASTER_URL: spark://spark-master:7077
+  #Nessie catalog for Iceberg table
+  nessie:
+    image: projectnessie/nessie
+    ports:
+      - '19120:19120'
+    environment:
+      nessie.version.store.type: 'MONGODB'
+      quarkus.mongodb.database: 'nessie-catalog'
+      quarkus.mongodb.connection-string: 'mongodb://admin:12345678@mongo:27017/'
+    depends_on:
+      - mongo
+  #MongoDB backed-storage for Nessie catalog
+  mongo:
+    image: mongo
+    ports:
+      - '27017:27017'
+    volumes:
+      - mongodb-data:/data/db
+      - mongodb-config:/data/configdb
+    environment:
+      MONGO_INITDB_ROOT_USERNAME: 'admin'
+      MONGO_INITDB_ROOT_PASSWORD: '12345678'
+  mongo-express:
+    image: mongo-express
+    ports:
+      - '8082:8081'
+    environment:
+      ME_CONFIG_MONGODB_ADMINUSERNAME: 'admin'
+      ME_CONFIG_MONGODB_ADMINPASSWORD: '12345678'
+      ME_CONFIG_BASICAUTH_USERNAME: 'admin'
+      ME_CONFIG_BASICAUTH_PASSWORD: '12345678'
+      ME_CONFIG_MONGODB_SERVER: 'mongo'
+      ME_CONFIG_MONGODB_PORT: '27017'
+      ME_CONFIG_MONGODB_URL: 'mongodb://admin:12345678@mongo:27017/'
+    depends_on:
+      - mongo
+  #PostgreSQL for Airflow
+  postgres:
+    image: postgres:14.0
+    environment:
+      POSTGRES_USER: 'admin'
+      POSTGRES_PASSWORD: '12345678'
+      POSTGRES_DB: 'airflow'
+      PGDATA: /var/lib/postgresql/data/pgdata
+    volumes:
+      - postgre-db:/var/lib/postgresql/data
+  #Airflow
+  airflow-server:
+    <<: *airflow-common
+    command: webserver
+    ports:
+      - '8080:8080'
+    depends_on:
+    - postgres
+  airflow-scheduler:
+    <<: *airflow-common
+    command: bash -c "airflow db migrate && airflow users create --username admin --firstname Vi --lastname Nguyen --role Admin --email nguyentanvi.ckd@gmail.com --password 12345678 && airflow scheduler"
+    depends_on:
+    - airflow-server
+  #Dremio
+  dremio:
+    image: dremio/dremio-oss:latest
+    ports:
+      - 9047:9047
+      - 31010:31010
+      - 45678:45678
+    volumes:
+      - dremio-data:/opt/dremio/data
+    environment:
+      DREMIO_MAX_MEMORY_SIZE_MB: 4096
+      DREMIO_MAX_DIRECT_MEMORY_SIZE_MB: 4096
+      #user: admin
+      #pass: Tavi@102743
+  #RedPanda
+  redpanda:
+    image: redpandadata/redpanda
+    command:
+      - redpanda
+      - start
+      - --kafka-addr internal://0.0.0.0:9092,external://0.0.0.0:19092
+      - --advertise-kafka-addr internal://redpanda:9092,external://localhost:19092
+      - --pandaproxy-addr internal://0.0.0.0:8082,external://0.0.0.0:18082
+      - --advertise-pandaproxy-addr internal://redpanda:8082,external://localhost:18082
+      - --schema-registry-addr internal://0.0.0.0:8081,external://0.0.0.0:18081
+      - --rpc-addr redpanda:33145
+      - --advertise-rpc-addr redpanda:33145
+      - --smp 1
+      - --memory 1G
+      - --mode dev-container
+      - --default-log-level=debug
+    volumes:
+      - redpanda-data:/var/lib/redpanda
+      - redpanda-data:/var/lib/redpanda/data
+    ports:
+      - "18081:18081"
+      - "18082:18082"
+      - "19092:19092"
+      - "19644:9644"
+  redpanda-console:
+    image: docker.redpanda.com/vectorized/console:v2.2.3
+    entrypoint: /bin/sh
+    command: -c 'echo "$$CONSOLE_CONFIG_FILE" > /tmp/config.yml; /app/console'
+    environment:
+      CONFIG_FILEPATH: /tmp/config.yml
+      CONSOLE_CONFIG_FILE: |
+        kafka:
+          brokers: ["redpanda:9092"]
+          schemaRegistry:
+            enabled: true
+            urls: ["http://redpanda:8081"]
+        redpanda:
+          adminApi:
+            enabled: true
+            urls: ["http://redpanda:9644"]
+    ports:
+      - "8084:8080"
+    depends_on:
+      - redpanda
+  #Debezium for cdc
+  debezium:
+    image: debezium/connect
+    ports:
+      - '8083:8083'
+    environment:
+      BOOTSTRAP_SERVERS: "redpanda:9092"
+      REST_ADVERTISED_HOST_NAME: kafka-connect-rest
+      GROUP_ID: "mysql-deb-kc-rp"
+      CONFIG_STORAGE_TOPIC: "redpanda.configs"
+      OFFSET_STORAGE_TOPIC: "redpanda.offset"
+      STATUS_STORAGE_TOPIC: "redpanda.status"
+      CONFIG_STORAGE_REPLICATION_FACTOR: "1"
+      OFFSET_STORAGE_REPLICATION_FACTOR: "1"
+      STATUS_STORAGE_REPLICATION_FACTOR: "1"
+      PLUGIN_PATH: /data/connect-jars
+      # KEY_CONVERTER: org.apache.kafka.connect.storage.StringConverter
+      # VALUE_CONVERTER: org.apache.kafka.connect.storage.StringConverter
+      # KEY_CONVERTER_SCHEMA_REGISTRY_URL: http://redpanda:8081
+      # VALUE_CONVERTER_SCHEMA_REGISTRY_URL: http://redpanda:8081
+    volumes:
+      - debezium-data:/data/connect-jars
+      - debezium-data:/kafka/config
+      - debezium-data:/kafka/data
+      - debezium-data:/kafka/logs
+    depends_on:
+      - redpanda
+      - mysql
+  debezium-ui:
+    image: debezium/debezium-ui
+    ports:
+      - '8085:8080'
+    environment:
+      KAFKA_CONNECT_URIS: http://debezium:8083
+    depends_on:
+      - debezium
+  #streamlit for Dashboard
+  streamlit:
+    build:
+      context: ./streamlit
+    image: streamlit
+    volumes:
+      - ./streamlit/streamlit_app.py:/app/streamlit_app.py
+    ports:
+      - '8501:8501'
+    command: streamlit run streamlit_app.py --server.port=8501
+    depends_on:
+      - dremio
+volumes:
+  mysql-db:
+  minio-db:
+  mongodb-data:
+  mongodb-config:
+  postgre-db:
+  dremio-data:
+  redpanda-data:
+  debezium-data:
