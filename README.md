@@ -1,19 +1,20 @@
 # On-Premises Batch and Stream Data Processing build on Docker Project
+## Data Architect
 ![image](https://github.com/tma-Jon/On-premises-end-to-end-data-project/assets/105640122/7538e543-54b1-4645-995b-eb5449477bb8)
 
-- MySQL as data source , localhost:3306
-- Spark as data processing, localhost:9090
-- Minio as object storage, localhost:9001
+- MySQL as data source with binary log enabled (localhost:3306)
+- Spark cluster (standalone) as distributed data processing, read batch data directly from MySQL (localhost:9090)
+- Minio as object storage, store data which from Spark (localhost:9001)
 - Iceberg as data lakehouse format table
-- Nessie as data catalog, localhost:19120
-- Mongodb as backed storage for Nessie
-- Mongodb Express as UI for Mongodb, localhost:8082
-- Airflow as orchestration tool, localhost:8080
-- PostgreSQL as backed storage for Airflow
-- Dremio as data LakeHouse query engine, localhost:9047
-- Debezium as data change capture tool, localhost:8085
-- Redpanda as Pub/Sub message (like Kafka), localhost:8084
-- Streamlit as Dashboard, localhost:8501
+- Nessie as data catalog for Iceberg (localhost:19120)
+- Mongodb as backed storage for Nessie, store metadata
+- Mongodb Express as UI for Mongodb (localhost:8082)
+- Airflow as orchestration tool, submit PySpark batch and streaming job to Spark master (localhost:8080)
+- PostgreSQL as backed storage for Airflow, store metadata
+- Dremio as data LakeHouse query engine, query data from Minio using Nessie catalog (localhost:9047)
+- Debezium as data change capture tool, read binary log from MySQL then push to Redpanda topics (localhost:8085)
+- Redpanda as Pub/Sub message queue (like Kafka), store change data from MySQL which pushed by Debezium, Spark streaming job read data from topics of Redpanda (localhost:8084)
+- Streamlit as Dashboard, using REST API of Dremio to get data and then visualize (localhost:8501)
 
 ### 1. Docker basic learning
   - Install WSL version 2 and Docker Desktop (for Windows)
